@@ -99,7 +99,10 @@ certificate can also be a self-signed one.
 Create a server key and certificate with the following command:
 
 ```
-$ openssl req  -nodes -new -x509 -keyout webhook-key.pem -out webhook.pem
+openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+  -keyout webhook-key.pem -out webhook.pem \
+  -subj "/CN=master-node" \
+  -addext "subjectAltName = DNS:master-node"
 ```
 
 The API server uses a certificate to prove its identity. This
@@ -108,7 +111,10 @@ certificate can also be a self-signed one.
 Create a server key and certificate with the following command:
 
 ```
-$ openssl req  -nodes -new -x509 -keyout apiserver-client-key.pem -out apiserver-client.pem
+openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+  -keyout apiserver-client-key.pem -out apiserver-client.pem \
+  -subj "/CN=master-node" \
+  -addext "subjectAltName = DNS:master-node"
 ```
 
 ## Kubernetes master node(s)
@@ -117,14 +123,31 @@ Ensure the `ImagePolicyWebhook` admission controller is enabled. Refer to
 the [official](https://kubernetes.io/docs/admin/admission-controllers/#imagepolicywebhook)
 documentation.
 
+Update `/etc/kubernetes/manifests/kube-apiserver.yaml` with the mounts to the webhook and the admission controller:
+
+```
+    - --enable-admission-plugins=NodeRestriction,ImagePolicyWebhook
+    - --admission-control-config-file=/etc/kubernetes/kube-image-bouncer/admission_configuration.json
+    .......
+    - mountPath: /etc/kubernetes/kube-image-bouncer
+      name: image-bouncer
+      readOnly: trues
+  ......
+  - hostPath:
+      path: /etc/kubernetes/kube-image-bouncer
+      type: DirectoryOrCreate
+    name: image-bouncer
+```
+
+
 Create an admission control configuration file named
-`/etc/kubernetes/admission_configuration.json` file with the following
+`/etc/kubernetes/kube-image-bouncer/admission_configuration.json` file with the following
 contents:
 
 ```json
 {
   "imagePolicy": {
-     "kubeConfigFile": "/etc/kubernetes/kube-image-bouncer.yml",
+     "kubeConfigFile": "/etc/kubernetes/kube-image-bouncer/kube-image-bouncer.yml",
      "allowTTL": 50,
      "denyTTL": 50,
      "retryBackoff": 500,
@@ -137,7 +160,7 @@ contents:
 if the server referenced by the webhook configuration is not reachable
 (see the `defaultAllow: false` directive).
 
-Create a kubeconfig file `/etc/kubernetes/kube-image-bouncer.yml` with the
+Create a kubeconfig file `/etc/kubernetes/kube-image-bouncer/kubeconfig.yml` with the
 following contents:
 
 ```yaml
@@ -146,7 +169,7 @@ kind: Config
 clusters:
 - cluster:
     certificate-authority: /etc/kubernetes/kube-image-bouncer/webhook.pem
-    server: https://bouncer.local.lan:1323/image_policy
+    server: https://master-node:1323/image_policy
   name: bouncer_webhook
 contexts:
 - context:
@@ -163,7 +186,7 @@ users:
 ```
 
 This configuration file instructs the API server to reach the webhook server
-at `https://bouncer.local.lan:1323` and use its `/image_policy` endpoint.
+at `https://master-node:1323` and use its `/image_policy` endpoint.
 
 Note that the certificates and keys we previously generated have been copied
 under `/etc/kubernetes/kube-image-bouncer`.
@@ -182,7 +205,8 @@ $ kube-image-bouncer --cert webhook.pem --key webhook-key.pem
 When using the [Docker image](https://hub.docker.com/r/flavio/kube-image-bouncer/):
 
 ```
-$ docker run --rm -v `pwd`/webhook-key.pem:/certs/webhook-key.pem:ro -v `pwd`/webhook.pem:/certs/webhook.pem:ro -p 1323:1323 flavio/kube-image-bouncer -k /certs/webhook-key.pem -c /certs/webhook.pem
+cd /etc/kubernetes/kube-image-bouncer
+docker run --rm -d --name bouncer -v `pwd`/webhook-key.pem:/certs/webhook-key.pem:ro -v `pwd`/webhook.pem:/certs/webhook.pem:ro -p 1323:1323 flavio/kube-image-bouncer -k /certs/webhook-key.pem -c /certs/webhook.pem
 ```
 
 This will start a container with the server key and certificate mounted read-only
